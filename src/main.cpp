@@ -374,10 +374,10 @@ void moveByTicks_encPID(int targetTicks, int timeOut, int maxPWM) {
         //
         
         //WiFiSerial.printf("EncL: %d | EncR: %d\n", error_enc, e_wall);
-        print(">Enc:"); print(error_enc); print(",");
-        print("Wall:"); print(e_wall); print(",");
-        print("Left:"); print(distL); print(",");
-        print("Right:"); print(distR); println("");
+        // print(">Enc:"); print(error_enc); print(",");
+        // print("Wall:"); print(e_wall); print(",");
+        // print("Left:"); print(distL); print(",");
+        // print("Right:"); print(distR); println("");
 
 
         if (e_wall > 0) digitalWrite(LED_BUILTIN, HIGH);
@@ -677,7 +677,7 @@ void bfsType02(int toX, int toY) {
 //     }
 // }
 
-char mouseDirection = 'n';
+char mouseDirection = 'e';
 
 char findDirection(int x, int y) { // nếu có đường rẽ bằng đường đi thẳng thì chọn đường đi thẳng
     int minValue = INT_MAX;
@@ -826,7 +826,7 @@ void print_wall()
     print(">WallL:"); print(wallLeft()); print(","); 
     print("WallR:"); print(wallRight()); print(","); 
     print("WallF:"); print(wallFront()); println(""); 
-    sensor_print();
+    //sensor_print();
 }
 
 void goTo(int x, int y){
@@ -863,7 +863,7 @@ void setup(){
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, HIGH);
   
-  vTaskDelay(1000);
+  vTaskDelay(15000);
 
 //   while(true){
 //     goTo(7, 7);
