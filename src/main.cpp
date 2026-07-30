@@ -134,6 +134,8 @@ void speedCalc(){
 /// ================================================= Better controls =================================================
 
 void print_motor(){
+    motorL.updateData();
+    motorR.updateData();
   speedCalc();
   print(">motorL:"); print(motorL.getTicks()); print(",");
   print("motorR:"); print(motorR.getTicks()); print(",");
@@ -264,15 +266,149 @@ void moveByTicks(int targetTicks, int timeOut, int maxPWM) {
 }
 
 
+void moveByTicks_encPID(int targetTicks, int timeOut, int maxPWM) {
+    motorL.resetTicks();
+    motorR.resetTicks();
+
+    unsigned long startTime = millis();
+
+    // Pure PD Gains
+    const float Kp_enc = 1.0f;  // Snappy response to tick differences
+    const float Kd_enc = 0.5f;  // Damps high-speed oscillations
+    float e_prev_enc = 0.0f;
+
+    // --- WALL PD GAINS & SAFETY LIMITS ---
+    const float Kp_wall = 5.0f;     // Start conservative
+    const float Kd_wall = 0.0f;
+    const float targetDist = 45.0f; // Target distance to side wall (mm)
+    const int maxWallCorr = 300;    // Absolute MAX PWM influence wall PID can exert
+
+
+    // Valid wall range thresholds (mm)
+    const float wallMaxDist = 100.0f;
+
+    float e_wall_prev = 0.0f;
+    bool hadWallLastFrame = false;
+
+    // Minimum PWM thresholds for 10-bit PWM (0-1023)
+    const int minStartPWM = 256; 
+    const int minEndPWM   = 200;
+
+    while (true) {
+        motorL.updateData();
+        motorR.updateData();
+
+        int curL = abs(motorL.getTicks());
+        int curR = abs(motorR.getTicks());
+        int avgTicks = (curL + curR) / 2;
+
+        // Exit conditions
+        if (avgTicks >= targetTicks || (millis() - startTime) > (unsigned long)timeOut) break;
+
+        // --- 1. RAMPING (Optimized for maximum high-speed duration) ---
+        int currentBasePWM;
+        
+        if (avgTicks < targetTicks * 0.15f) {
+            // Aggressive Ramp-Up (0% -> 15% distance)
+            currentBasePWM = map(avgTicks, 0, targetTicks * 0.15f, minStartPWM, maxPWM);
+        } else if (avgTicks > targetTicks * 0.80f) {
+            // Late Ramp-Down (80% -> 100% distance)
+            currentBasePWM = map(avgTicks, targetTicks * 0.80f, targetTicks, maxPWM, minEndPWM);
+        } else {
+            // Cruise at full speed (15% -> 80% distance)
+            currentBasePWM = maxPWM;
+        }
+
+        // --- 2. ENCODER PD DIFFERENTIAL CONTROL ---
+        float error_enc = (float)(curL - curR);
+        float derivative_enc = error_enc - e_prev_enc;
+        e_prev_enc = error_enc;
+
+        float corr_enc = (Kp_enc * error_enc) + (Kd_enc * derivative_enc);
+
+
+        //
+        // --- 3. SAFE WALL PD ---
+        float distL = controls.getDistance(0);
+        float distR = controls.getDistance(3);
+
+        bool hasL = distL <= wallMaxDist;
+        bool hasR = distR <= wallMaxDist;
+
+        float e_wall = 0.0f;
+        float corr_wall = 0.0f;
+        bool hasAnyWall = hasL || hasR;
+
+        if (hasL && hasR) {
+            corr_enc = 0.0f;
+            e_wall = distL - distR; // Negative = closer to left wall
+        } else if (hasL) {
+            //corr_enc = 0.0f;
+            e_wall = (distL - targetDist);
+        } else if (hasR) {
+            //corr_enc = 0.0f;
+            e_wall = (targetDist - distR);
+        }
+
+        if (hasAnyWall) {
+            float d_wall = 0.0f;
+            
+            // Safety Check: Only apply Derivative if wall existed in the last frame
+            if (hadWallLastFrame) {
+                d_wall = e_wall - e_wall_prev;
+            }
+            e_wall_prev = e_wall;
+            hadWallLastFrame = true;
+
+            // Calculate raw wall correction
+            corr_wall = (Kp_wall * e_wall) + (Kd_wall * d_wall);
+
+            // Safety Clamp: Prevent wall PID from jerking the robot past safety limits
+            corr_wall = constrain(corr_wall, (float)-maxWallCorr, (float)maxWallCorr);
+        } else {
+            // No walls detected -> reset tracking state
+            hadWallLastFrame = false;
+            e_wall_prev = 0.0f;
+            corr_wall = 0.0f;
+        }
+        //
+        
+        //WiFiSerial.printf("EncL: %d | EncR: %d\n", error_enc, e_wall);
+        print(">Enc:"); print(error_enc); print(",");
+        print("Wall:"); print(e_wall); print(",");
+        print("Left:"); print(distL); print(",");
+        print("Right:"); print(distR); println("");
+
+
+        if (e_wall > 0) digitalWrite(LED_BUILTIN, HIGH);
+        else digitalWrite(LED_BUILTIN, LOW);
+
+        // --- 3. MOTOR DRIVE ---
+        float totalCorr = corr_enc + corr_wall;
+
+        int pwmL = currentBasePWM - (int)totalCorr;
+        int pwmR = currentBasePWM + (int)totalCorr;
+
+        motorL.movePWM(constrain(pwmL, -1023, 1023));
+        motorR.movePWM(constrain(pwmR, -1023, 1023));
+    }
+    
+    // Stop motors
+    motorL.movePWM(0);
+    motorR.movePWM(0);
+}
+
+
+
 void turnByTicks(i32 ticks, ui32 budget) {
     motorL.resetTicks();
     motorR.resetTicks();
 
     i32 targetAbs = abs(ticks);
 
-    float Kp_enc  = 1.0f;
+    float Kp_enc  = 2.0f;
     float Ki_enc  = 0.02f;
-    float Kd_enc  = 1.0f;
+    float Kd_enc  = 0.0f;
 
     float e_enc_prev = 0;
     float e_enc_sum  = 0;
@@ -336,25 +472,29 @@ void turnByTicks(i32 ticks, ui32 budget) {
 
     motorL.movePWM(0);
     motorR.movePWM(0);
-    vTaskDelay(10);
 }
 
 /// ================================================= INTEGRATION =================================================
 
 void moveForward(int cell) { 
     if (cell > 1) {
-        moveByTicks(2150 * cell, 3500 * cell, 600);  
+        moveByTicks_encPID(2200 * cell, 3500 * cell, 600);  
     } else {
-        moveByTicks(2150 * cell, 3000 * cell, 600);
+        moveByTicks_encPID(2200 * cell, 3000 * cell, 600);
     }
+
+    //print_motor();
+
+    motorL.resetTicks();
+    motorR.resetTicks();
 }
 
 void turnLeft() {
-    turnByTicks(-800, 3000);
+    turnByTicks(-780, 3000);
 }
 
 void turnRight() {
-    turnByTicks(800, 3000);
+    turnByTicks(780, 3000);
 }
 
 
@@ -681,6 +821,13 @@ void updateWall(int x, int y) {
 }
 
 
+void print_wall()
+{
+    print(">WallL:"); print(wallLeft()); print(","); 
+    print("WallR:"); print(wallRight()); print(","); 
+    print("WallF:"); print(wallFront()); println(""); 
+    sensor_print();
+}
 
 void goTo(int x, int y){
     while(myPosX != x || myPosY != y){ /// go back
@@ -690,6 +837,7 @@ void goTo(int x, int y){
         //setText();
         char d = findDirection(myPosX, myPosY);
         if (mouseDirection != d) spinningBaby(d);
+        print_wall();
         move(myPosX, myPosY, d);
         //API::setColor(cvX(myPosX), cvY(myPosY), 'c');
         switch_led((ID++) % 6);
@@ -714,12 +862,11 @@ void setup(){
   controls.begin();
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, HIGH);
-
   
-  vTaskDelay(5000);
+  vTaskDelay(1000);
 
 //   while(true){
-//     goTo(7, 8);
+//     goTo(7, 7);
 //     // vTaskDelay(15000);
 //     //vTaskDelay(100);
 //     goTo(0,15);
@@ -727,20 +874,35 @@ void setup(){
   
 }
 
-void print_wall()
-{
-    sensor_read();
-    print(">WallL:"); print(wallLeft()); print(","); 
-    print("WallR:"); print(wallRight()); print(","); 
-    print("WallF:"); print(wallFront()); println(""); 
-}
 
 void loop() {
 
-    sensor_read();
-    
-    sensor_print();
+    print_motor();
 
-    print_wall();
+    // sensor_read();
+    // print_sensor();
+    // moveForward(1);
+    // vTaskDelay(1000);
+    // turnRight();
+    // vTaskDelay(1000);
+
+    // vTaskDelay(1000);
+    goTo(7, 7);
+    //vTaskDelay(1000);
+    goTo(0,15);
+
+    // motorL.movePWM(512);
+    // motorR.movePWM(512);
+
+    // vTaskDelay(1000);
+
+    // motorL.movePWM(0);
+    // motorR.movePWM(0);
+
+    // print_motor();
+    // vTaskDelay(2000);
+
+    // motorL.resetTicks();
+    // motorR.resetTicks();
 
 }

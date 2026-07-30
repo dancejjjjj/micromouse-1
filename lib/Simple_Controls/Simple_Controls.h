@@ -6,8 +6,8 @@ using ui16 = uint16_t;
 
 
 struct Simple_Controls{
-    const i16 VL53L0X_OFFSET[4] = {-42, -15, -15, -20};
-    const float VL53L0X_SCALE[4] = {0.94, 1, 1.14, 0.98};
+    const i16 VL53L0X_OFFSET[4] = {-46, -15, -15, -10};
+    const float VL53L0X_SCALE[4] = {0.95, 1, 1.14, 1.05};
     // const i16 VL53L0X_OFFSET[4] = {0, 0, 0, 0};
     
     Simple_MultiVL53L0X toFSensors;
