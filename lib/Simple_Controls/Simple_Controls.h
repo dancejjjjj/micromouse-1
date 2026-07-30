@@ -6,7 +6,7 @@ using ui16 = uint16_t;
 
 
 struct Simple_Controls{
-    const i16 VL53L0X_OFFSET[4] = {-40, -15, -15, -24};
+    const i16 VL53L0X_OFFSET[4] = {-42, -15, -15, -20};
     const float VL53L0X_SCALE[4] = {0.94, 1, 1.14, 0.98};
     // const i16 VL53L0X_OFFSET[4] = {0, 0, 0, 0};
     

@@ -58,9 +58,6 @@ void switch_led(uint8_t ID) {
 /// ================================================= JUST FOR FUN END =================================================
 
 
-/// ================================================= CONFIG =================================================
-
-
 /// ================================================= ENCODER =================================================
 
 // ticks
@@ -83,111 +80,12 @@ Motor motorL( 5, 6,4, 1, 2,1, PCNT_UNIT_0);
 Motor motorR(11,10,7,13,12,0, PCNT_UNIT_1);
 
 
-
-/// ================================================= ToF SENSOR =================================================
-#define SDA_PIN 8
-#define SCL_PIN 9
-
-// PCF8574 address
-#define PCF_ADDR 0x20
-
-// XSHUT mapping trên PCF (P0 → P3)
-#define XSHUT_L   0
-#define XSHUT_M1  1
-#define XSHUT_M2  2
-#define XSHUT_R   3
-
-PCF8574 pcf(PCF_ADDR);
-
-// Sensors
-Adafruit_VL53L0X sensorL;
-Adafruit_VL53L0X sensorM1;
-Adafruit_VL53L0X sensorM2;
-Adafruit_VL53L0X sensorR;
-
 // Distance
 volatile ui16 distL = 0;
 volatile uint16_t distM1 = 0;
 volatile uint16_t distM2 = 0;
 volatile uint16_t distR = 0;
 
-// Fiter
-uint16_t lastL1=0, lastL2=0;
-uint16_t lastM11=0, lastM12=0;
-uint16_t lastM21=0, lastM22=0;
-uint16_t lastR1=0, lastR2=0;
-
-uint16_t median3(uint16_t a, uint16_t b, uint16_t c){
-  if (a > b) { uint16_t t=a; a=b; b=t; }
-  if (b > c) { uint16_t t=b; b=c; c=t; }
-  if (a > b) { uint16_t t=a; a=b; b=t; }
-  return b;
-}
-
-// ================================================= PCF CONTROL =================================================
-void xshut_write(uint8_t pin, bool level){
-  pcf.write(pin, level ? HIGH : LOW);
-}
-
-// ================================================= INIT =================================================
-bool init_sensor(Adafruit_VL53L0X &sensor, uint8_t xshutPin, uint8_t addr, const char* name){
-  xshut_write(xshutPin, HIGH);
-  vTaskDelay(50); // ⚠️ quan trọng với PCF
-
-  while(!sensor.begin()){
-    print("Retry ");
-    println(name);
-    vTaskDelay(50);
-  }
-
-  sensor.setAddress(addr);
-
-  print("[OK] ");
-  print(name);
-  print(" @ 0x");
-  println(addr, HEX);
-
-  return true;
-}
-
-void sensor_init(){
-  println("=== Sensor init (PCF8574) ===");
-
-  Wire.begin(SDA_PIN, SCL_PIN);
-  vTaskDelay(10);
-
-  pcf.begin();
-  vTaskDelay(10);
-
-  // Tắt hết
-  for(int i = 0; i < 4; i++){
-    xshut_write(i, LOW);
-  }
-  vTaskDelay(100);
-
-  // Init từng sensor
-  init_sensor(sensorL,  XSHUT_L,  0x30, "L");
-  init_sensor(sensorM1, XSHUT_M1, 0x31, "M1");
-  init_sensor(sensorM2, XSHUT_M2, 0x32, "M2");
-  init_sensor(sensorR,  XSHUT_R,  0x33, "R");
-
-  // Timing budget
-  const ui32 budget = 5000;
-  sensorL.setMeasurementTimingBudgetMicroSeconds(budget);
-  sensorM1.setMeasurementTimingBudgetMicroSeconds(budget);
-  sensorM2.setMeasurementTimingBudgetMicroSeconds(budget);
-  sensorR.setMeasurementTimingBudgetMicroSeconds(budget);
-
-  vTaskDelay(10);
-
-  // Continuous mode
-  sensorL.startRangeContinuous(5);
-  sensorM1.startRangeContinuous(5);
-  sensorM2.startRangeContinuous(5);
-  sensorR.startRangeContinuous(5);
-
-  println("=== Sensor READY ===");
-}
 
 // ================================================= READ =================================================
 void sensor_read(){
@@ -197,85 +95,14 @@ void sensor_read(){
   const ui16 calibrateR = -30;
 
   distL = controls.getDistance(0);
+  distR = controls.getDistance(3);
   //distM1 = controls.getDistance(1);
   distM2 = controls.getDistance(2);
-  distR = controls.getDistance(3);
-
-  // // ===== L =====
-  // if(sensorL.isRangeComplete()){
-  //   uint16_t raw = sensorL.readRangeResult() + calibrateL;
-
-  //   uint16_t med = median3(lastL2, lastL1, raw);
-  //   distL = distL * 0.7 + med * 0.3;
-
-  //   lastL2 = lastL1;
-  //   lastL1 = raw;
-  // }
-
-  // // ===== M1 =====
-  // if(sensorM1.isRangeComplete()){
-  //   uint16_t raw = sensorM1.readRangeResult() + calibrateM1;
-
-  //   uint16_t med = median3(lastM12, lastM11, raw);
-  //   distM1 = distM1 * 0.7 + med * 0.3;
-
-  //   lastM12 = lastM11;
-  //   lastM11 = raw;
-  // }
-
-  // // ===== M2 =====
-  // if(sensorM2.isRangeComplete()){
-  //   uint16_t raw = sensorM2.readRangeResult() + calibrateM2;
-
-  //   uint16_t med = median3(lastM22, lastM21, raw);
-  //   distM2 = distM2 * 0.7 + med * 0.3;
-
-  //   lastM22 = lastM21;
-  //   lastM21 = raw;
-  // }
-
-  // // ===== R =====
-  // if(sensorR.isRangeComplete()){
-  //   uint16_t raw = sensorR.readRangeResult() + calibrateR;
-
-  //   uint16_t med = median3(lastR2, lastR1, raw);
-  //   distR = distR * 0.7 + med * 0.3;
-
-  //   lastR2 = lastR1;
-  //   lastR1 = raw;
-  // }
 }
-
-// void sensor_read(){
-//   const ui16 calibrateL = -22;
-//   const ui16 calibrateM1 = 0;
-//   const ui16 calibrateM2 = 0;
-//   const ui16 calibrateR = -20;
-//   // ===== L =====
-//   if(sensorL.isRangeComplete()){
-//     distL = sensorL.readRangeResult() + calibrateL;
-//   }
-
-//   // ===== M1 =====
-//   if(sensorM1.isRangeComplete()){
-//     distM1 = sensorM1.readRangeResult() + calibrateM1;
-//   }
-
-//   // ===== M2 =====
-//   if(sensorM2.isRangeComplete()){
-//     distM2 = sensorM2.readRangeResult() + calibrateM2;
-//   }
-
-//   // ===== R =====
-//   if(sensorR.isRangeComplete()){
-//     distR = sensorR.readRangeResult() + calibrateR;
-//   }
-// }
 
 // ================= DEBUG =================
 void sensor_print(){
   print(">SensorL:"); print(distL); print(",");
-  print("SensorM1:"); print(distM1); print(",");
   print("SensorM2:"); print(distM2); print(",");
   print("SensorR:"); print(distR); println(",");
 }
@@ -312,6 +139,36 @@ void print_motor(){
   print("motorR:"); print(motorR.getTicks()); print(",");
   print("speedL:"); print(motorL.getSpeed()); print(",");
   print("speedR:"); print(motorR.getSpeed()); print(","); println("");
+}
+
+bool wallFront() {
+    const ui16 maxDistance = 150;
+    uint32_t sum = 0;
+    for (int i = 0; i < 3; i++) {
+        sum += controls.getDistance(2);
+    }
+    distM2 = sum / 3;
+    return distM2 < maxDistance;
+}
+
+bool wallLeft() {
+    const ui16 maxDistance = 150;
+    uint32_t sum = 0;
+    for (int i = 0; i < 3; i++) {
+        sum += controls.getDistance(0);
+    }
+    distL = sum / 3;
+    return distL < maxDistance;
+}
+
+bool wallRight() {
+    const ui16 maxDistance = 150;
+    uint32_t sum = 0;
+    for (int i = 0; i < 3; i++) {
+        sum += controls.getDistance(3);
+    }
+    distR = sum / 3;
+    return distR < maxDistance;
 }
 
 
@@ -369,7 +226,8 @@ void moveByTicks(int targetTicks, int timeOut, int maxPWM) {
         float corr = (Kp_enc * e_enc) + (Ki_enc * e_enc_sum) + (Kd_enc * d_enc);
  
         // --- 3. KẾT HỢP CẢM BIẾN TƯỜNG ---
-        sensor_read(); // Cập nhật distL, distR
+        distL = controls.getDistance(0);
+        distR = controls.getDistance(3);
         
         bool hasL = distL < 120;
         bool hasR = distR < 120;
@@ -497,26 +355,6 @@ void turnLeft() {
 
 void turnRight() {
     turnByTicks(800, 3000);
-}
-
-
-bool wallFront() {
-    sensor_read();
-    const ui16 maxDistance = 100;
-    //return (distM1 + distM2) < (maxDistance * 2);
-    return distM2 < maxDistance;
-}
-  
-bool wallLeft() {
-    sensor_read();
-    const ui16 maxDistance = 100;
-    return distL < maxDistance; 
-}
-  
-bool wallRight() {
-    sensor_read();
-    const ui16 maxDistance = 100;
-    return distR < maxDistance; 
 }
 
 
@@ -814,7 +652,6 @@ void move(int fromX, int fromY, char direction)
 }
     
 void updateWall(int x, int y) {
-    // Sample sensors 3 times for stability before checking walls (takes ~45ms total instead of 500ms
     if (mouseDirection == 'n') {
         if (wallFront()) Matrix[x][y].can_go_up = false;
         if (wallLeft())  Matrix[x][y].can_go_left = false;
@@ -846,29 +683,17 @@ void updateWall(int x, int y) {
 
 
 void goTo(int x, int y){
-
-while(myPosX != x || myPosY != y){ /// go back
-
-updateWall(myPosX, myPosY);
-
-Matrix[myPosX][myPosY].vis = 1;
-
-bfsType02(x,y);
-
-//setText();
-
-char d = findDirection(myPosX, myPosY);
-
-if (mouseDirection != d) spinningBaby(d);
-
-move(myPosX, myPosY, d);
-
-//API::setColor(cvX(myPosX), cvY(myPosY), 'c');
-
-switch_led((ID++) % 6);
-
-}
-
+    while(myPosX != x || myPosY != y){ /// go back
+        updateWall(myPosX, myPosY);
+        Matrix[myPosX][myPosY].vis = 1;
+        bfsType02(x,y);
+        //setText();
+        char d = findDirection(myPosX, myPosY);
+        if (mouseDirection != d) spinningBaby(d);
+        move(myPosX, myPosY, d);
+        //API::setColor(cvX(myPosX), cvY(myPosY), 'c');
+        switch_led((ID++) % 6);
+    }
 } 
 
 
@@ -893,53 +718,29 @@ void setup(){
   
   vTaskDelay(5000);
 
-  while(true){
-    goTo(7, 8);
-    // vTaskDelay(15000);
-    //vTaskDelay(100);
-    goTo(0,15);
-  }
+//   while(true){
+//     goTo(7, 8);
+//     // vTaskDelay(15000);
+//     //vTaskDelay(100);
+//     goTo(0,15);
+//   }
   
 }
 
+void print_wall()
+{
+    sensor_read();
+    print(">WallL:"); print(wallLeft()); print(","); 
+    print("WallR:"); print(wallRight()); print(","); 
+    print("WallF:"); print(wallFront()); println(""); 
+}
 
 void loop() {
 
-    // sensor_read();
-    // sensor_print();
-    // print(wallFront); print(" ");
-    // print(wallLeft); print(" ");
-    // print(wallRight); println(" ");
-    // turnLeft();
-    // vTaskDelay(100);
-    // turnRight();
-    // vTaskDelay(100);
-  
-  
+    sensor_read();
+    
+    sensor_print();
 
-  //print_motor();
-  
-  // moveForward(1);
-
-  // sensor_read();
-  // sensor_print();
-
-  // moveForward(4);
-  // vTaskDelay(5000);
-  // moveByTicks(280, 3000);
-
-  // print(">");
-  // print("L:"); print(wallLeft()); print(",");
-  // print("R:"); print(wallRight()); print(",");
-  // print("Front:"); print(wallFront()); print(",");
-  // println("");
-  // sensor_read();
-  // print_sensor();
-
-  // vTaskDelay(3000);
-  // sensor_read();
-  // sensor_print();
-  // vTaskDelay(2);
-
+    print_wall();
 
 }
