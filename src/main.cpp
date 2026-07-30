@@ -36,23 +36,6 @@ void setColor(uint8_t r, uint8_t g, uint8_t b) {
 }
 
 
-void switch_led(uint8_t ID) {
-  static uint8_t state = 0; // nhớ trạng thái giữa các lần gọi
-
-  switch (state) {
-    case 0: setColor(255, 0, 0); break;   // đỏ
-    case 1: setColor(0, 255, 0); break;   // xanh lá
-    case 2: setColor(0, 0, 255); break;   // xanh dương
-    case 3: setColor(255, 255, 0); break; // vàng
-    case 4: setColor(0, 255, 255); break; // cyan
-    case 5: setColor(255, 0, 255); break; // tím
-    //case 6: setColor(0, 0, 0); break;     // tắt
-  }
-
-  state = (state + 1) % 6; // quay vòng
-}
-
-
 
 
 /// ================================================= JUST FOR FUN END =================================================
@@ -144,126 +127,38 @@ void print_motor(){
 }
 
 bool wallFront() {
-    const ui16 maxDistance = 150;
+    const ui16 maxDistance = 100;
     uint32_t sum = 0;
     for (int i = 0; i < 3; i++) {
         sum += controls.getDistance(2);
+        vTaskDelay(1); // Small delay to prevent RMT buffer overflow
     }
     distM2 = sum / 3;
     return distM2 < maxDistance;
 }
 
 bool wallLeft() {
-    const ui16 maxDistance = 150;
+    const ui16 maxDistance = 100;
     uint32_t sum = 0;
     for (int i = 0; i < 3; i++) {
         sum += controls.getDistance(0);
+        vTaskDelay(1);
     }
     distL = sum / 3;
     return distL < maxDistance;
 }
 
 bool wallRight() {
-    const ui16 maxDistance = 150;
+    const ui16 maxDistance = 100;
     uint32_t sum = 0;
     for (int i = 0; i < 3; i++) {
         sum += controls.getDistance(3);
+        vTaskDelay(1);
     }
     distR = sum / 3;
     return distR < maxDistance;
 }
 
-
-void moveByTicks(int targetTicks, int timeOut, int maxPWM) {
-    // Reset ticks về 0 để tránh tích lũy sai số từ lần gọi trước
-    motorL.resetTicks();
-    motorR.resetTicks();
- 
-    unsigned long startTime = millis();
- 
-    // Tất cả biến PID khai báo LOCAL để mỗi lần gọi đều bắt đầu sạch
-    float e_enc_prev = 0;
-    float e_enc_sum  = 0;
-    float Ki_enc     = 0.0f;
-    float Kd_enc     = 0.5f;
- 
-    float Kp_enc   = 1.0f;
-    float Kp_wall  = 1.0f; // Scaled up slightly for 10-bit PWM range
-    float targetDist = 45.0f;
-
-    // Minimum PWM threshold to overcome static friction (10-bit PWM: 0-1023)
-    const int minStartPWM = 256; 
-    const int minEndPWM   = 256;
- 
-    while (true) {
-        motorL.updateData();
-        motorR.updateData();
-        int curL = abs(motorL.getTicks());
-        int curR = abs(motorR.getTicks());
-        int avgTicks = (curL + curR) / 2;
- 
-        // Điều kiện dừng: đạt số tick hoặc hết thời gian
-        if (avgTicks >= targetTicks || (millis() - startTime) > (unsigned long)timeOut) break;
- 
-        // --- 1. TÍNH TOÁN BASE PWM (RAMPING) ---
-        int currentBasePWM;
-        
-        if (avgTicks < targetTicks * 0.2f) {
-            // Ramp up from starting torque threshold to maxPWM
-            currentBasePWM = map(avgTicks, 0, targetTicks * 0.2f, minStartPWM, maxPWM);
-        } else if (avgTicks > targetTicks * 0.7f) {
-            // Ramp down to minimum stopping PWM
-            currentBasePWM = map(avgTicks, targetTicks * 0.7f, targetTicks, maxPWM, minEndPWM);
-        } else {
-            currentBasePWM = maxPWM;
-        }
- 
-        // --- 2. TÍNH TOÁN SAI SỐ ENCODER (PID) ---
-        float e_enc = (float)(curL - curR);
-        e_enc_sum += e_enc;
-        e_enc_sum = constrain(e_enc_sum, -300.0f, 300.0f); 
-        float d_enc = e_enc - e_enc_prev;
-        e_enc_prev = e_enc;
- 
-        float corr = (Kp_enc * e_enc) + (Ki_enc * e_enc_sum) + (Kd_enc * d_enc);
- 
-        // --- 3. KẾT HỢP CẢM BIẾN TƯỜNG ---
-        distL = controls.getDistance(0);
-        distR = controls.getDistance(3);
-        
-        bool hasL = distL < 120;
-        bool hasR = distR < 120;
-        float e_wall = 0;
-        float w_wall = 0;
- 
-        if (hasL && hasR) {
-            e_wall = distL - distR;
-            w_wall = 1.0f;
-        }
-        else if (hasL) {
-            e_wall = distL - targetDist;
-            w_wall = 0.7f;
-        }
-        else if (hasR) {
-            e_wall = targetDist - distR;
-            w_wall = 0.7f;
-        }
-        
-        // Cộng dồn sai số tường vào hệ số bù
-        corr += (Kp_wall * e_wall * w_wall);
- 
-        // --- 4. ĐIỀU KHIỂN ĐỘNG CƠ ---
-        int pwmL = currentBasePWM - (int)corr;
-        int pwmR = currentBasePWM + (int)corr;
- 
-        // Constrain to 10-bit PWM limits (-1023 to 1023)
-        motorL.movePWM(constrain(pwmL, -1023, 1023));
-        motorR.movePWM(constrain(pwmR, -1023, 1023));
-    }
-    
-    motorL.movePWM(0);
-    motorR.movePWM(0);
-}
 
 
 void moveByTicks_encPID(int targetTicks, int timeOut, int maxPWM) {
@@ -273,15 +168,15 @@ void moveByTicks_encPID(int targetTicks, int timeOut, int maxPWM) {
     unsigned long startTime = millis();
 
     // Pure PD Gains
-    const float Kp_enc = 1.0f;  // Snappy response to tick differences
+    const float Kp_enc = 0.5f;  // Snappy response to tick differences
     const float Kd_enc = 0.5f;  // Damps high-speed oscillations
     float e_prev_enc = 0.0f;
 
     // --- WALL PD GAINS & SAFETY LIMITS ---
-    const float Kp_wall = 5.0f;     // Start conservative
-    const float Kd_wall = 0.0f;
+    const float Kp_wall = 1.5f;     // Start conservative
+    const float Kd_wall = 0.1f;
     const float targetDist = 45.0f; // Target distance to side wall (mm)
-    const int maxWallCorr = 300;    // Absolute MAX PWM influence wall PID can exert
+    const int maxWallCorr = 256;    // Absolute MAX PWM influence wall PID can exert
 
 
     // Valid wall range thresholds (mm)
@@ -374,14 +269,11 @@ void moveByTicks_encPID(int targetTicks, int timeOut, int maxPWM) {
         //
         
         //WiFiSerial.printf("EncL: %d | EncR: %d\n", error_enc, e_wall);
-        print(">Enc:"); print(error_enc); print(",");
-        print("Wall:"); print(e_wall); print(",");
-        print("Left:"); print(distL); print(",");
-        print("Right:"); print(distR); println("");
+        // print(">Enc:"); print(error_enc); print(",");
+        // print("Wall:"); print(e_wall); print(",");
+        // print("Left:"); print(distL); print(",");
+        // print("Right:"); print(distR); println("");
 
-
-        if (e_wall > 0) digitalWrite(LED_BUILTIN, HIGH);
-        else digitalWrite(LED_BUILTIN, LOW);
 
         // --- 3. MOTOR DRIVE ---
         float totalCorr = corr_enc + corr_wall;
@@ -466,19 +358,22 @@ void turnByTicks(i32 ticks, ui32 budget) {
             motorR.forward(pwmR);
         }
 
-        print_motor();
+        //print_motor();
         vTaskDelay(5);
     }
 
     motorL.movePWM(0);
     motorR.movePWM(0);
+
+    vTaskDelay(10);
+
 }
 
 /// ================================================= INTEGRATION =================================================
 
 void moveForward(int cell) { 
     if (cell > 1) {
-        moveByTicks_encPID(2200 * cell, 3500 * cell, 600);  
+        moveByTicks_encPID(2370 * cell, 3500 * cell, 600);  
     } else {
         moveByTicks_encPID(2200 * cell, 3000 * cell, 600);
     }
@@ -837,10 +732,9 @@ void goTo(int x, int y){
         //setText();
         char d = findDirection(myPosX, myPosY);
         if (mouseDirection != d) spinningBaby(d);
-        print_wall();
+        //print_wall();
         move(myPosX, myPosY, d);
         //API::setColor(cvX(myPosX), cvY(myPosY), 'c');
-        switch_led((ID++) % 6);
     }
 } 
 
@@ -863,7 +757,7 @@ void setup(){
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, HIGH);
   
-  vTaskDelay(1000);
+  vTaskDelay(5000);
 
 //   while(true){
 //     goTo(7, 7);
@@ -877,12 +771,12 @@ void setup(){
 
 void loop() {
 
-    print_motor();
+    //print_motor();
 
     // sensor_read();
     // print_sensor();
-    // moveForward(1);
-    // vTaskDelay(1000);
+    // moveForward(2);
+    // vTaskDelay(5000);
     // turnRight();
     // vTaskDelay(1000);
 
