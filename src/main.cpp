@@ -173,8 +173,8 @@ void moveByTicks_encPID(int targetTicks, int timeOut, int maxPWM) {
     float e_prev_enc = 0.0f;
 
     // --- WALL PD GAINS & SAFETY LIMITS ---
-    const float Kp_wall = 1.5f;     // Start conservative
-    const float Kd_wall = 0.1f;
+    const float Kp_wall = 1.3f;     // Start conservative
+    const float Kd_wall = 1.0f;
     const float targetDist = 45.0f; // Target distance to side wall (mm)
     const int maxWallCorr = 256;    // Absolute MAX PWM influence wall PID can exert
 
@@ -375,7 +375,7 @@ void moveForward(int cell) {
     if (cell > 1) {
         moveByTicks_encPID(2370 * cell, 3500 * cell, 600);  
     } else {
-        moveByTicks_encPID(2200 * cell, 3000 * cell, 600);
+        moveByTicks_encPID(2150 * cell, 3000 * cell, 600);
     }
 
     //print_motor();
@@ -385,11 +385,11 @@ void moveForward(int cell) {
 }
 
 void turnLeft() {
-    turnByTicks(-780, 3000);
+    turnByTicks(-810, 3000);
 }
 
 void turnRight() {
-    turnByTicks(780, 3000);
+    turnByTicks(810, 3000);
 }
 
 
