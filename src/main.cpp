@@ -167,17 +167,18 @@ void moveByTicks_encPID(int targetTicks, int timeOut, int maxPWM) {
 
     unsigned long startTime = millis();
 
-    // Pure PD Gains
-    const float Kp_enc = 0.5f;  // Snappy response to tick differences
-    const float Kd_enc = 0.5f;  // Damps high-speed oscillations
+    // --- ENCODER PD GAINS (ƯU TIÊN CHÍNH) ---
+    const float Kp_enc = 0.8f;  // Tăng nhẹ để bám đường thẳng tốt hơn
+    const float Kd_enc = 0.5f;  
     float e_prev_enc = 0.0f;
 
-    // --- WALL PD GAINS & SAFETY LIMITS ---
-    const float Kp_wall = 1.3f;     // Start conservative
-    const float Kd_wall = 1.0f;
-    const float targetDist = 45.0f; // Target distance to side wall (mm)
-    const int maxWallCorr = 256;    // Absolute MAX PWM influence wall PID can exert
-
+    // --- WALL PD GAINS & SAFETY LIMITS (CHỈ CANH NHẸ) ---
+    const float Kp_wall = 0.25f;    // Giảm hệ số Kp tường để không bị giật
+    const float Kd_wall = 0.15f;    // Giảm hệ số Kd tường
+    const float targetDist = 45.0f; // Khoảng cách mục tiêu đến tường (mm)
+    
+    // Giới hạn can thiệp của tường: chỉ cho phép chỉnh nhẹ (ví dụ 80/1023)
+    const int maxWallCorr = 80;     
 
     // Valid wall range thresholds (mm)
     const float wallMaxDist = 100.0f;
@@ -200,21 +201,18 @@ void moveByTicks_encPID(int targetTicks, int timeOut, int maxPWM) {
         // Exit conditions
         if (avgTicks >= targetTicks || (millis() - startTime) > (unsigned long)timeOut) break;
 
-        // --- 1. RAMPING (Optimized for maximum high-speed duration) ---
+        // --- 1. RAMPING ---
         int currentBasePWM;
         
         if (avgTicks < targetTicks * 0.15f) {
-            // Aggressive Ramp-Up (0% -> 15% distance)
             currentBasePWM = map(avgTicks, 0, targetTicks * 0.15f, minStartPWM, maxPWM);
         } else if (avgTicks > targetTicks * 0.80f) {
-            // Late Ramp-Down (80% -> 100% distance)
             currentBasePWM = map(avgTicks, targetTicks * 0.80f, targetTicks, maxPWM, minEndPWM);
         } else {
-            // Cruise at full speed (15% -> 80% distance)
             currentBasePWM = maxPWM;
         }
 
-        // --- 2. ENCODER PD DIFFERENTIAL CONTROL ---
+        // --- 2. ENCODER PD DIFFERENTIAL CONTROL (LUÔN HOẠT ĐỘNG) ---
         float error_enc = (float)(curL - curR);
         float derivative_enc = error_enc - e_prev_enc;
         e_prev_enc = error_enc;
@@ -222,8 +220,7 @@ void moveByTicks_encPID(int targetTicks, int timeOut, int maxPWM) {
         float corr_enc = (Kp_enc * error_enc) + (Kd_enc * derivative_enc);
 
 
-        //
-        // --- 3. SAFE WALL PD ---
+        // --- 3. SAFE WALL PD (CANH NHẸ) ---
         float distL = controls.getDistance(0);
         float distR = controls.getDistance(3);
 
@@ -235,47 +232,36 @@ void moveByTicks_encPID(int targetTicks, int timeOut, int maxPWM) {
         bool hasAnyWall = hasL || hasR;
 
         if (hasL && hasR) {
-            corr_enc = 0.0f;
-            e_wall = distL - distR; // Negative = closer to left wall
+            // Không set corr_enc = 0 nữa
+            e_wall = distL - distR; 
         } else if (hasL) {
-            //corr_enc = 0.0f;
             e_wall = (distL - targetDist);
         } else if (hasR) {
-            //corr_enc = 0.0f;
             e_wall = (targetDist - distR);
         }
 
         if (hasAnyWall) {
             float d_wall = 0.0f;
             
-            // Safety Check: Only apply Derivative if wall existed in the last frame
             if (hadWallLastFrame) {
                 d_wall = e_wall - e_wall_prev;
             }
             e_wall_prev = e_wall;
             hadWallLastFrame = true;
 
-            // Calculate raw wall correction
+            // Tính toán lực can thiệp từ tường
             corr_wall = (Kp_wall * e_wall) + (Kd_wall * d_wall);
 
-            // Safety Clamp: Prevent wall PID from jerking the robot past safety limits
+            // Chặn giới hạn PWM của Wall PID ở mức rất nhỏ (maxWallCorr)
             corr_wall = constrain(corr_wall, (float)-maxWallCorr, (float)maxWallCorr);
         } else {
-            // No walls detected -> reset tracking state
             hadWallLastFrame = false;
             e_wall_prev = 0.0f;
             corr_wall = 0.0f;
         }
-        //
-        
-        //WiFiSerial.printf("EncL: %d | EncR: %d\n", error_enc, e_wall);
-        // print(">Enc:"); print(error_enc); print(",");
-        // print("Wall:"); print(e_wall); print(",");
-        // print("Left:"); print(distL); print(",");
-        // print("Right:"); print(distR); println("");
 
-
-        // --- 3. MOTOR DRIVE ---
+        // --- 4. MOTOR DRIVE ---
+        // Kết hợp cả 2: Encoder điều phối chính, Wall chỉ bù thêm hoặc bớt đi một lượng nhỏ
         float totalCorr = corr_enc + corr_wall;
 
         int pwmL = currentBasePWM - (int)totalCorr;
@@ -289,7 +275,6 @@ void moveByTicks_encPID(int targetTicks, int timeOut, int maxPWM) {
     motorL.movePWM(0);
     motorR.movePWM(0);
 }
-
 
 
 void turnByTicks(i32 ticks, ui32 budget) {
@@ -371,372 +356,545 @@ void turnByTicks(i32 ticks, ui32 budget) {
 
 /// ================================================= INTEGRATION =================================================
 
-void moveForward(int cell) { 
+void moveForwardMotor(int cell) { 
     if (cell > 1) {
         moveByTicks_encPID(2370 * cell, 3500 * cell, 600);  
     } else {
-        moveByTicks_encPID(2150 * cell, 3000 * cell, 600);
+        moveByTicks_encPID(2100 * cell, 3000 * cell, 600);
     }
 
     //print_motor();
 
     motorL.resetTicks();
     motorR.resetTicks();
+    delay(5);
 }
 
 void turnLeft() {
     turnByTicks(-810, 3000);
+    delay(5);
 }
 
 void turnRight() {
     turnByTicks(810, 3000);
+    delay(5);
 }
 
+#include <cstdint>
+#include <vector>
+#include <queue>
+#include <stack>
 
 
-int N = 16; /// size of the Maze
-int myPosX = 0;
-int myPosY = 15;
+using i8 = int8_t;
+using i16 = int16_t;
+using i32 = int32_t;
+using ui8 = uint8_t;
+using ui16 = uint16_t;
+using ui32 = uint32_t;
 
-struct static_queue{
-    std::pair<ui8,ui8> array[255];
-    ui8 capacity = 0;
-    ui8 L = 0, R = 0;
-
-    std::pair<ui8,ui8> front(){
-        return array[R];
-    }
-    void pop(){
-        if(R == 0){
-            R = 254;
-        }else{
-            R --;
-        }
-        --capacity;
-    }
-    void push(std::pair<ui8,ui8> input){
-        array[L] = input;
-        if(L == 0){
-            L = 254;
-        }else{
-            L --;
-        }
-        ++capacity;
-    }
-
-    ui8 empty(){
-        return !capacity;
-    }
-};
-
-
-// DEBUG
-//ofstream out("output.txt");
+using namespace std;
 
 struct cell {
-    ui8 distance = 0;
-	bool can_go_up = true;
-	bool can_go_down = true;
-	bool can_go_left = true;
-	bool can_go_right = true;
-    bool vis = 0;
+    ui8 mask = 0b00001111; // 000vnswe - mouse visited - north - east - south - west
+    ui8 value = 0; // value of the cell - use for BFS
+    ui32 mask2 = 0; // xxxx...yyyy... - bitmask for dijkstra
+
+    bool direction(char d) { /// return if mouse can go to specific direction in this cell.
+        if(d == 'n') return north();
+        if(d == 'e') return east();
+        if(d == 's') return south();
+        if(d == 'w') return west();
+    }
+
+    bool moveX(int n){
+        return getBit2(n);
+    }
+
+    void moveX(int n, bool value){
+        changeBit2(n, value);
+    }
+
+    bool moveY(int n){
+        return getBit2(n + 16);
+    }
+
+    void moveY(int n, bool value){
+        changeBit2(n + 16, value);
+    }
+
+    /// change bit
+    void visit(bool tf){ // Set whether the robot visited this cell.
+        changeBit(4, tf);
+    }
+    void north(bool tf){ // Set whether the robot can move NORTH within that cell.
+        changeBit(3, tf);
+    }
+    void east(bool tf){ // Set whether the robot can move SOUTH within that cell.
+        changeBit(2, tf);
+    }
+    void south(bool tf){ // Set whether the robot can move WEST within that cell.
+        changeBit(1, tf);
+    }
+    void west(bool tf){ // Set whether the robot can move EAST within that cell.
+        changeBit(0, tf);
+    }
+
+    /// get bit
+    bool visit(){ // Return True if the robot visited this cell.
+        return getBit(4);
+    }
+    bool north(){ // Return True if the robot can go to the NORTH, vice versa.
+        return getBit(3);
+    }
+    bool east(){ // Return True if the robot can go to the SOUTH, vice versa.
+        return getBit(2);
+    }
+    bool south(){ // Return True if the robot can go to the WEST, vice versa.
+        return getBit(1);
+    }
+    bool west(){ // Return True if the robot can go to the EAST, vice versa.
+        return getBit(0);
+    }
+    
+    bool getBit(ui8 n) const {
+        return (mask >> n) & 1;
+    }
+    void changeBit(ui8 n, bool value) {
+        if (value) mask |= (1 << n);
+        else mask &= ~(1 << n);
+    }
+
+    bool getBit2(ui8 n) const {
+        return (mask2 >> n) & 1;
+    }
+    void changeBit2(ui8 n, bool value) {
+        if (value) mask2 |= (1 << n);
+        else mask2 &= ~(1 << n);
+    }
 };
-std::vector<std::vector<cell>> Matrix;
 
-// DEBUG
-//void log(const std::string& text) {
-//    std::cerr << text << std::endl;
-//}
+cell Matrix[16][16];
 
-// DEBUG
-/// Convert my coordinate to simulator coordinate
-//int cvX(int X){
-//    return X;
-//}
-//int cvY(int Y){
-//    return N-1-Y;
-//}
-
-void makeBorder(int Size) {
-    for (int i = 0; i < Size; i++) {
-        Matrix[0][i].can_go_left = false;
-		Matrix[Size - 1][i].can_go_right = false;
-		Matrix[i][0].can_go_up = false;
-		Matrix[i][Size - 1].can_go_down = false;
-	}
-}
-
-// DUBUG
-// void cellDebug(int X, int Y){
-//     cell Cell = Matrix[X][Y];
-//     out << X << ' ' << Y << endl;
-//     out << "Distance: " << Cell.distance << endl;
-//     out << "Up: " << Cell.can_go_up << endl;
-//     out << "Down: " << Cell.can_go_down << endl;
-//     out << "Left: " << Cell.can_go_left << endl;
-//     out << "Right: " << Cell.can_go_right << endl;
-//     out << "--------------\n";
-//     out.flush();
+/// =============================== GUI ===============================
+// void printWall(int x, int y){
+//     if(Matrix[x][y].north() == false){
+//         setWall(x,y,'n');
+//     }
+//     if(Matrix[x][y].south() == false){
+//         setWall(x,y,'s');
+//     }
+//     if(Matrix[x][y].west() == false){
+//         setWall(x,y,'w');
+//     }
+//     if(Matrix[x][y].east() == false){
+//         setWall(x,y,'e');
+//     }
 // }
 
-void clearMatrix(){
-    cell cleanCell;
-    for(auto& i:Matrix){
-        for(auto& cell: i){
-            cell.distance = 0;
-        }
-    }
-}
-
-// DEBUG
-// void setText(){
-//     for(int x = 0; x < N; x++){
-//         for(int y = 0; y < N; y++){
-//             setText(cvX(x), cvY(y),to_string(Matrix[x][y].distance));
+// void printAllWall(){
+//     for(int i = 0; i < 16; i++){
+//         for(int j = 0; j < 16; j++){
+//             printWall(i,j);
 //         }
 //     }
 // }
 
-// DEBUG
-// void setColor(){
-//     int CenterPos1 = N / 2;
-//     int CenterPos2 = N / 2 - 1;
-    
-//     setColor(cvX(CenterPos1), cvY(CenterPos1),  'g');
-//     setColor(cvX(CenterPos1), cvY(CenterPos2),  'g');
-//     setColor(cvX(CenterPos2), cvY(CenterPos1),  'g');
-//     setColor(cvX(CenterPos2), cvY(CenterPos2),  'g');
+// void printNumber(int x, int y){
+//     setText(x,y,to_string(Matrix[x][y].value));
 // }
 
-void bfsType02(int toX, int toY) {
-    clearMatrix();
-    /// set where to
-    Matrix[toX][toY].distance = 1;
-    
-    /// bfs from center
-    static_queue MyQueue;
-    MyQueue.push({ toX, toY});
-    
-    while (MyQueue.empty() == false) { /// not empty
-        ui8 CurX = MyQueue.front().first;
-        ui8 CurY = MyQueue.front().second;
-        MyQueue.pop();
-
-        if (Matrix[CurX][CurY].can_go_up) {
-            if (Matrix[CurX][CurY-1].distance == 0) { /// = 0 means not visited
-                Matrix[CurX][CurY - 1].distance = Matrix[CurX][CurY].distance + 1;
-                MyQueue.push({ CurX,CurY - 1 });
-            }
-        }
-        if (Matrix[CurX][CurY].can_go_down) {
-            if (Matrix[CurX][CurY+1].distance == 0) { /// = 0 means not visited
-                Matrix[CurX][CurY + 1].distance = Matrix[CurX][CurY].distance + 1;
-                MyQueue.push({ CurX,CurY + 1 });
-            }
-        }
-        if (Matrix[CurX][CurY].can_go_left) {
-            if (Matrix[CurX-1][CurY].distance == 0) { /// = 0 means not visited
-                Matrix[CurX-1][CurY].distance = Matrix[CurX][CurY].distance + 1;
-                MyQueue.push({ CurX-1,CurY});
-            }
-        }
-        if (Matrix[CurX][CurY].can_go_right) {
-            if (Matrix[CurX+1][CurY].distance == 0) { /// = 0 means not visited
-                Matrix[CurX+1][CurY].distance = Matrix[CurX][CurY].distance + 1;
-                MyQueue.push({ CurX+1,CurY});
-            }
-        }	
-    }
-}
-
-
-// DEBUG
-// void printDistance(vector<vector<cell>>& A) {
-//     for(int x = 0; x < A.size(); x++){
-//         for(int y = 0; y < A.size(); y++){
-//             int i = cvX(x);
-//             int j = cvY(y);
-//             if(Matrix[x][y].can_go_up == false){
-//                 setWall(i,j,'n');
-//             }
-//             if(Matrix[x][y].can_go_down == false){
-//                 setWall(i,j,'s');
-//             }
-//             if(Matrix[x][y].can_go_left == false){
-//                 setWall(i,j,'w');
-//             }
-//             if(Matrix[x][y].can_go_right == false){
-//                 setWall(i,j,'e');
-//             }
+// void printAllNumber(){
+//     for(int i = 0; i < 16; i++){
+//         for(int j = 0; j < 16; j++){
+//             printNumber(i,j);
 //         }
 //     }
 // }
+/// ============================= GUI END =============================
+
+void setBorder(){
+    for(int i = 0; i < 16; i++){
+        Matrix[i][0].south(false);
+        Matrix[i][15].north(false);
+        Matrix[0][i].west(false);
+        Matrix[15][i].east(false);
+    }
+}
 
 char mouseDirection = 'n';
+ui8 mouseX = 0, mouseY = 0;
 
-char findDirection(int x, int y) { // nếu có đường rẽ bằng đường đi thẳng thì chọn đường đi thẳng
-    int minValue = INT_MAX;
-    char minPath = 0;
-    if(Matrix[x][y].can_go_up){
-        if(Matrix[x][y-1].distance < minValue){
-            minValue = Matrix[x][y-1].distance;
-            minPath = 'n';
+void refine(ui8 x, ui8 y){ // set wall for the nearest 4 cells
+    i8 dx[] = {-1,0,0,1};
+    i8 dy[] = {0,-1,1,0};
+
+    for(int i = 0; i < 4; i++){
+        i8 nextX = x + dx[i];
+        i8 nextY = y + dy[i];
+
+        if(nextX >= 0 && nextX < 16 && nextY >= 0 && nextY < 16){
+            if(i == 0) Matrix[nextX][nextY].east(Matrix[x][y].west());
+            if(i == 1) Matrix[nextX][nextY].north(Matrix[x][y].south());
+            if(i == 2) Matrix[nextX][nextY].south(Matrix[x][y].north());
+            if(i == 3) Matrix[nextX][nextY].west(Matrix[x][y].east());
         }
     }
-    if(Matrix[x][y].can_go_down){
-        if(Matrix[x][y+1].distance < minValue){
-            minValue = Matrix[x][y+1].distance;
-            minPath = 's';
-        }
-    }
-    if(Matrix[x][y].can_go_left){
-        if(Matrix[x-1][y].distance < minValue){
-            minValue = Matrix[x-1][y].distance;
-            minPath = 'w';
-        }
-    }
-    if(Matrix[x][y].can_go_right){
-        if(Matrix[x+1][y].distance < minValue){
-            minValue = Matrix[x+1][y].distance;
-            minPath = 'e';
-        }
-    }
-    return minPath;
 }
 
-void spinningBaby(char direction)
-{
-    switch (direction){
-        case 'n': /// want to go up
-            if(mouseDirection == 'e'){
-                turnLeft();
-            }else if(mouseDirection == 'w'){
-                 turnRight();
-            }else if(mouseDirection == 's'){
-                turnLeft();
-                turnLeft();
+void getWall(){ // pure miracle
+    ui8 magic_number;
+    ui8 magic_map [][3] = {
+        {0,3,2},
+        {3,2,1},
+        {2,1,0},
+        {1,0,3}
+    };
+
+    if(mouseDirection == 'n') magic_number = 0;
+    if(mouseDirection == 'e') magic_number = 1;
+    if(mouseDirection == 's') magic_number = 2;
+    if(mouseDirection == 'w') magic_number = 3;
+
+    Matrix[mouseX][mouseY].changeBit(magic_map[magic_number][0], !wallLeft());
+    Matrix[mouseX][mouseY].changeBit(magic_map[magic_number][1], !wallFront());
+    Matrix[mouseX][mouseY].changeBit(magic_map[magic_number][2], !wallRight());
+
+    refine(mouseX,mouseY);
+}
+
+void bfs (int startX, int startY){
+    for(int i = 0; i < 16; i++){
+        for(int j = 0; j < 16; j++){
+            Matrix[i][j].value = 0;
+        }
+    }
+    queue<pair<int,int>> q; // store x,y coordinate
+    q.push({startX,startY});
+    Matrix[startX][startY].value = 1;
+
+    while(!q.empty()){
+        int currentX = q.front().first;
+        int currentY = q.front().second;
+        cell currentCell = Matrix[currentX][currentY];
+        
+        q.pop();
+        
+        if(currentCell.north() && Matrix[currentX][currentY+1].value == 0){
+            Matrix[currentX][currentY+1].value = currentCell.value + 1;
+            q.push({currentX, currentY+1});
+        }
+        
+        if(currentCell.east() && Matrix[currentX+1][currentY].value == 0){
+            Matrix[currentX+1][currentY].value = currentCell.value + 1;
+            q.push({currentX+1, currentY});
+        }
+
+        if(currentCell.south() && Matrix[currentX][currentY-1].value == 0){
+            Matrix[currentX][currentY-1].value = currentCell.value + 1;
+            q.push({currentX, currentY-1});
+        }
+
+        if(currentCell.west() && Matrix[currentX-1][currentY].value == 0){
+            Matrix[currentX-1][currentY].value = currentCell.value + 1;
+            q.push({currentX-1, currentY});
+        }
+    }
+}
+
+void turnClockwise(int n){
+    if(n >= 0){
+        while(n--) turnRight();
+    }else{
+        while(n++) turnLeft();
+    }
+}
+
+void turnToDirection(char d){
+    if(d == mouseDirection) return;
+
+    ui8 magic_number;
+    ui8 magic_number2;
+
+    if(mouseDirection == 'n') magic_number = 0;
+    if(mouseDirection == 'e') magic_number = 1;
+    if(mouseDirection == 's') magic_number = 2;
+    if(mouseDirection == 'w') magic_number = 3;
+
+    if(d == 'n') magic_number2 = 0;
+    if(d == 'e') magic_number2 = 1;
+    if(d == 's') magic_number2 = 2;
+    if(d == 'w') magic_number2 = 3;
+
+    i8 magic_map [][4] = {
+        {0, 1, 2, -1},
+        {-1, 0, 1, 2},
+        {-2,-1, 0, 1},
+        { 1, 2,-1, 0}
+    };
+
+    turnClockwise(magic_map[magic_number][magic_number2]);
+    mouseDirection = d;
+
+}
+
+char getDirection (int x, int y){ // return optimal direction 
+    if(mouseDirection == 'n' && Matrix[x][y].north() && Matrix[x][y+1].value < Matrix[x][y].value) return 'n';
+    if(mouseDirection == 'e' && Matrix[x][y].east() && Matrix[x+1][y].value < Matrix[x][y].value) return 'e';
+    if(mouseDirection == 's' && Matrix[x][y].south() && Matrix[x][y-1].value < Matrix[x][y].value) return 's';
+    if(mouseDirection == 'w' && Matrix[x][y].west() && Matrix[x-1][y].value < Matrix[x][y].value) return 'w';
+
+    if(Matrix[x][y].north() && Matrix[x][y+1].value < Matrix[x][y].value) return 'n';
+    if(Matrix[x][y].east() && Matrix[x+1][y].value < Matrix[x][y].value) return 'e';
+    if(Matrix[x][y].south() && Matrix[x][y-1].value < Matrix[x][y].value) return 's';
+    if(Matrix[x][y].west() && Matrix[x-1][y].value < Matrix[x][y].value) return 'w';
+
+    return 'E'; // ERROR - cannot find optimal direction - may the robot is already in center
+}
+
+void moveForward(int steps = 1){
+    moveForwardMotor(steps);
+    if(mouseDirection == 'n') mouseY += steps;
+    if(mouseDirection == 'e') mouseX += steps;
+    if(mouseDirection == 's') mouseY -= steps;
+    if(mouseDirection == 'w') mouseX -= steps;
+}
+
+
+
+void moveTo (int targetX, int targetY){ // simple function that helps the robot move to a specific location - prioritize moving forward
+    while(true){
+        setColor(mouseX, mouseY, 'g');
+        getWall();
+        Matrix[mouseX][mouseY].visit(true);
+        
+        // printAllWall();
+
+        bfs(targetX,targetY);
+
+        // printAllNumber();
+
+        char d = getDirection(mouseX,mouseY);
+        if(d == 'E') break;
+        
+        int steps = 1;
+        if(d == 'n'){
+            int pseudoY = mouseY + steps;
+            while(Matrix[mouseX][pseudoY].visit() && getDirection(mouseX,pseudoY) == d){
+                steps++;
+                pseudoY = mouseY + steps;
             }
-            mouseDirection = 'n';
-            break;
-            case 's':
-            if(mouseDirection == 'e'){
-                turnRight();
-            }else if(mouseDirection == 'w'){
-                 turnLeft();
-            }else if(mouseDirection == 'n'){
-                turnLeft();
-                turnLeft();
+        }else if(d == 's'){
+            int pseudoY = mouseY - steps;
+            while(Matrix[mouseX][pseudoY].visit() && getDirection(mouseX,pseudoY) == d){
+                steps++;
+                pseudoY = mouseY - steps;
             }
-            mouseDirection = 's';
-            break;
-        case 'e': /// to the right
-            if(mouseDirection == 'n'){
-                turnRight();
-            }else if(mouseDirection == 's'){
-                 turnLeft();
-            }else if(mouseDirection == 'w'){
-                turnLeft();
-                turnLeft();
+        }else if(d == 'e'){
+            int pseudoX = mouseX + steps;
+            while(Matrix[pseudoX][mouseY].visit() && getDirection(pseudoX,mouseY) == d){
+                steps++;
+                pseudoX = mouseX + steps;
             }
-            mouseDirection = 'e';
-            break;
-            case 'w': /// to the left
-            if(mouseDirection == 'n'){
-                turnLeft();
-            }else if(mouseDirection == 's'){
-                 turnRight();
-            }else if(mouseDirection == 'e'){
-                turnLeft();
-                turnLeft();
+        }else if(d == 'w'){
+            int pseudoX = mouseX - steps;
+            while(Matrix[pseudoX][mouseY].visit() && getDirection(pseudoX,mouseY) == d){
+                steps++;
+                pseudoX = mouseX - steps;
             }
-            mouseDirection = 'w';
-            break;
         }
+        turnToDirection(d);
+        moveForward(steps);
+    }
 }
 
-
-void move(int fromX, int fromY, char direction)
-{
-    int predPosX = myPosX;
-    int predPosY = myPosY;
-    int blocks = 0;
-    while (Matrix[predPosX][predPosY].vis == 1 and findDirection(predPosX, predPosY) == mouseDirection){
-        blocks++;
-        switch (direction){
-        case 'n': /// want to go up
-            mouseDirection = 'n';
-            predPosY-=1;
-            break;
-        case 's':
-            mouseDirection = 's';
-            predPosY+=1;
-            break;
-        case 'e': /// to the right
-            mouseDirection = 'e';
-            predPosX+=1;
-            break;
-        case 'w': /// to the left
-            predPosX-=1;
-            mouseDirection = 'w';
-            break;
+pair<int,int> getNearestUndiscovered(int startX, int startY){
+    for(int i = 0; i < 16; i++){
+        for(int j = 0; j < 16; j++){
+            Matrix[i][j].value = 0;
         }
     }
-    myPosX = predPosX;
-    myPosY = predPosY;
-    moveForward(blocks);
-}
-    
-void updateWall(int x, int y) {
-    if (mouseDirection == 'n') {
-        if (wallFront()) Matrix[x][y].can_go_up = false;
-        if (wallLeft())  Matrix[x][y].can_go_left = false;
-        if (wallRight()) Matrix[x][y].can_go_right = false;  
-    }
-    else if (mouseDirection == 's') {
-        if (wallFront()) Matrix[x][y].can_go_down = false;
-        if (wallLeft())  Matrix[x][y].can_go_right = false;
-        if (wallRight()) Matrix[x][y].can_go_left = false;  
-    }
-    else if (mouseDirection == 'e') {
-        if (wallFront()) Matrix[x][y].can_go_right = false;
-        if (wallLeft())  Matrix[x][y].can_go_up = false;
-        if (wallRight()) Matrix[x][y].can_go_down = false;  
-    }
-    else if (mouseDirection == 'w') {
-        if (wallFront()) Matrix[x][y].can_go_left = false;
-        if (wallLeft())  Matrix[x][y].can_go_down = false;
-        if (wallRight()) Matrix[x][y].can_go_up = false;  
+    queue<pair<int,int>> q; // store x,y coordinate
+    q.push({startX,startY});
+    Matrix[startX][startY].value = 1;
+
+    while(!q.empty()){
+        int currentX = q.front().first;
+        int currentY = q.front().second;
+        cell currentCell = Matrix[currentX][currentY];
+
+        if (currentCell.visit() == false){
+            return {currentX, currentY};
+        }
+        q.pop();
+        
+        if(currentCell.north() && Matrix[currentX][currentY+1].value == 0){
+
+            Matrix[currentX][currentY+1].value = 1;
+            q.push({currentX, currentY+1});
+        }
+        
+        if(currentCell.east() && Matrix[currentX+1][currentY].value == 0){
+            Matrix[currentX+1][currentY].value = 1;
+            q.push({currentX+1, currentY});
+        }
+
+        if(currentCell.south() && Matrix[currentX][currentY-1].value == 0){
+            Matrix[currentX][currentY-1].value = 1;
+            q.push({currentX, currentY-1});
+        }
+
+        if(currentCell.west() && Matrix[currentX-1][currentY].value == 0){
+            Matrix[currentX-1][currentY].value = 1;
+            q.push({currentX-1, currentY});
+        }
     }
 
-    cell currentCell = Matrix[x][y]; 
-    if (!currentCell.can_go_up    && y - 1 >= 0) Matrix[x][y-1].can_go_down = false;
-    if (!currentCell.can_go_down  && y + 1 < N)  Matrix[x][y+1].can_go_up   = false;
-    if (!currentCell.can_go_left  && x - 1 >= 0) Matrix[x-1][y].can_go_right = false;
-    if (!currentCell.can_go_right && x + 1 < N)  Matrix[x+1][y].can_go_left  = false;
-}
-
-
-void print_wall()
-{
-    print(">WallL:"); print(wallLeft()); print(","); 
-    print("WallR:"); print(wallRight()); print(","); 
-    print("WallF:"); print(wallFront()); println(""); 
-    sensor_print();
+    return {0,0};
 }
 
-void goTo(int x, int y){
-    while(myPosX != x || myPosY != y){ /// go back
-        updateWall(myPosX, myPosY);
-        Matrix[myPosX][myPosY].vis = 1;
-        bfsType02(x,y);
-        //setText();
-        char d = findDirection(myPosX, myPosY);
-        if (mouseDirection != d) spinningBaby(d);
-        //print_wall();
-        move(myPosX, myPosY, d);
-        //API::setColor(cvX(myPosX), cvY(myPosY), 'c');
+void findAllUndiscovered(){
+    while (true){
+        pair<int,int> coordinate = getNearestUndiscovered(mouseX,mouseY);
+        if(coordinate == make_pair(0,0)) return;
+        moveTo(coordinate.first, coordinate.second);
     }
-} 
+}
+
+/// ====================== Dijkstra ======================
+void initDijkstra(){ // create data for dijkstra to work
+    for(int x = 0; x < 16; x++){
+        for(int y = 0; y < 16; y++){
+            for(int r = x; r < 16; r++){
+                if(Matrix[r][y].north() || Matrix[r][y].south()){
+                    Matrix[x][y].moveX(r, true);
+                    Matrix[r][y].moveX(x, true);
+                    // setColor(r,y,'G');
+                }
+                if(Matrix[r][y].east() == false){
+                    break;
+                }
+            }
+            
+            // std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            
+            for(int u = y; u < 16; u++){
+                if(Matrix[x][u].east() || Matrix[x][u].west()){
+                    Matrix[x][y].moveY(u,true);
+                    Matrix[x][u].moveY(y,true);
+                    // setColor(x,u,'G');
+                }
+                if(Matrix[x][u].north() == false){
+                    break;
+                }
+            }
+        }
+    }
+}
+
+struct xy{ /// my struct to store 4-bit xy coordinate into 8-bit interger 
+    ui8 mask = 0; // xxxxyyyy
+    ui8 x(){
+        return mask >> 4;
+    }
+    ui8 y(){
+        return mask & 0b00001111;
+    }
+    void x(ui8 n){
+        mask = (mask & 0b00001111) | (n << 4);
+    }
+    void y(ui8 n){
+        mask = (mask & 0b11110000) | n;
+    }
+};
+
+pair<int,int> extractXY(xy a){ // return pair{x,y} from xy structure
+    return {a.x(), a.y()};
+}
+
+
+xy par[16][16];
+
+ui8 turnCost = 4;
+ui8 distanceCost[16] = {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16};
+void dijkstra(int startX, int startY){
+    for(int i = 0; i < 16; i++){
+        for(int j = 0; j < 16; j++){
+            par[i][j].x(i);
+            par[i][j].y(j);
+            Matrix[i][j].value = UINT8_MAX;
+        }
+    }
+
+    xy coordinate;
+    coordinate.x(startX);
+    coordinate.y(startY);
+
+    priority_queue<pair<int,int>, vector<pair<int,int>>, greater<pair<int,int>>> pq;
+    Matrix[startX][startY].value = 0;
+    pq.push({0, coordinate.mask});
+
+    while(!pq.empty()){
+        i16 currentDistance = pq.top().first;
+        xy coordinate1; //
+        xy coordinate2; // temp variable
+        coordinate1.mask = pq.top().second;
+        i16 currentX = coordinate1.x();
+        i16 currentY = coordinate1.y();
+        pq.pop();
+
+        if(Matrix[currentX][currentY].value < currentDistance) continue;
+
+        for(i16 i = 0; i < 16; i++){
+            if(Matrix[currentX][currentY].moveX(i) == true){
+                if(currentDistance + distanceCost[abs(i - currentX)] + turnCost < Matrix[i][currentY].value){
+                    par[i][currentY] = coordinate1;
+
+                    Matrix[i][currentY].value = currentDistance + distanceCost[abs(i - currentX)] + turnCost;
+                    coordinate2.x(i);
+                    coordinate2.y(currentY);
+                    pq.push({Matrix[i][currentY].value, coordinate2.mask});
+                }
+
+            }
+            if(Matrix[currentX][currentY].moveY(i) == true){
+                if(currentDistance + distanceCost[abs(i - currentY)] + turnCost < Matrix[currentX][i].value){
+                    par[currentX][i] = coordinate1;
+
+                    Matrix[currentX][i].value = currentDistance + distanceCost[abs(i - currentY)] + turnCost;
+                    coordinate2.x(currentX);
+                    coordinate2.y(i);
+                    pq.push({Matrix[currentX][i].value, coordinate2.mask});
+                }
+            }
+        }
+    }    
+}
+
+void dijkstraTo(int x, int y){
+    initDijkstra();
+    dijkstra(mouseX, mouseY);
+
+    stack<pair<int,int>> stk;
+    stk.push({x,y});
+    while(true){
+        if(stk.top() == extractXY(par[stk.top().first][stk.top().second])){
+            break;
+        }
+        stk.push(extractXY(par[stk.top().first][stk.top().second]));
+    }
+
+    while(!stk.empty()){
+        int x = stk.top().first;
+        int y = stk.top().second;
+        setColor(x, y, 'b');
+        moveTo(x,y);
+        stk.pop();
+    }
+}
+
+/// ==================== Dijkstra END ====================
+
 
 
 /// ================================================= INTERGRATION END =================================================
@@ -746,8 +904,10 @@ void setup(){
   vTaskDelay(1000);
 
 
-  Matrix.resize(N, std::vector<cell>(N));
-  makeBorder(16);
+  
+  
+
+  
   
   motorL.begin();
   motorR.begin();
@@ -759,31 +919,37 @@ void setup(){
   
   vTaskDelay(5000);
 
-//   while(true){
-//     goTo(7, 7);
-//     // vTaskDelay(15000);
-//     //vTaskDelay(100);
-//     goTo(0,15);
-//   }
-  
+  //   while(true){
+    //     goTo(7, 7);
+    //     // vTaskDelay(15000);
+    //     //vTaskDelay(100);
+    //     goTo(0,15);
+    //   }
+    
+    setBorder();
+    // printAllWall();
+    
+    moveTo(7,7);
+    findAllUndiscovered();
+    moveTo(0,0);
 }
 
 
 void loop() {
 
     //print_motor();
-
+    
     // sensor_read();
     // print_sensor();
     // moveForward(2);
     // vTaskDelay(5000);
     // turnRight();
     // vTaskDelay(1000);
-
+    
     // vTaskDelay(1000);
-    goTo(7, 7);
     //vTaskDelay(1000);
-    goTo(0,15);
+        dijkstraTo(7,7);
+        dijkstraTo(0,0);
 
     // motorL.movePWM(512);
     // motorR.movePWM(512);
